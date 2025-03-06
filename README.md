@@ -3,8 +3,8 @@
 # RAW Image Reconstruction for Film Simulation with Low-Grade Sensors 
 
 ## Authors
-   - [Zhuoqian Yang](https://github.com/yzhq97)
-   - [Kevan Lam Hopyang](https://github.com/KevanLam)
+   - [Zhuoqian Yang](https://github.com/yzhq97) (Supervisor)
+   - [Kevan Lam Hopyang](https://github.com/KevanLam) (Assisstant)
 
 
 <details>
