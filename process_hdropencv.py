@@ -2,7 +2,7 @@ import os
 import cv2
 import numpy as np
 
-def merge_hdr_opencv(image_paths, exposure_times=None, output_dir="hdr_outputs", output_prefix="HDR", tone_mapping = True):
+def merge_hdr_opencv(image_paths, exposure_times=None, output_dir="hdr_outputsopencv", output_prefix="HDR", tone_mapping = True):
     """
     Merge multiple exposure images into an HDR image using OpenCV.
     
@@ -92,7 +92,7 @@ def merge_hdr_opencv(image_paths, exposure_times=None, output_dir="hdr_outputs",
     
     return hdr_path
 
-def process_cr2_files(dataset_path, scene_id, output_dir="hdr_outputs"):
+def process_cr2_files(dataset_path, scene_id, output_dir="hdr_outputsopencv"):
     """
     Process CR2 files for a specific scene and create HDR image.
     This function handles RAW files using OpenCV's HDR merging.
@@ -189,7 +189,7 @@ def main():
         dataset_path = "sihdr/raw"
         scene_id = "191"
         
-        process_cr2_files("dataset_path, scene_id")
+        process_cr2_files(dataset_path, scene_id)
 
 
     #test()
