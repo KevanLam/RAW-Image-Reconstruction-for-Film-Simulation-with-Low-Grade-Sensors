@@ -2,19 +2,9 @@ import os
 import cv2
 import numpy as np
 
-def merge_hdr_opencv(image_paths, exposure_times=None, output_dir="hdr_outputsopencv", output_prefix="HDR", tone_mapping = True):
+def merge_hdr_opencv(image_paths, exposure_times=None, output_dir="hdr_outputsopencv", output_prefix="HDR", tone_mapping=True):
     """
-    Merge multiple exposure images into an HDR image using OpenCV.
-    
-    Parameters:
-    image_paths (list): List of paths to input images
-    exposure_times (list): List of exposure times for each image. If None, will attempt to estimate.
-    output_dir (str): Directory to save output files
-    output_prefix (str): Prefix for output filenames
-    tone_mapping (bool): Whether to apply tone mapping
-    
-    Returns:
-    str: Path to the saved HDR image
+    Merge multiple exposure images into an HDR image using OpenCV and export as linear 16-bit TIFF.
     """
     # Create output directory if it doesn't exist
     if not os.path.exists(output_dir):
@@ -43,26 +33,46 @@ def merge_hdr_opencv(image_paths, exposure_times=None, output_dir="hdr_outputsop
     
     print(f"Using exposure times: {exposure_times}")
     
-    # Align input images
+
     print("Aligning images...")
     alignMTB = cv2.createAlignMTB()
     alignMTB.process(images, images)
     
-    # Obtain Camera Response Function
+
     print("Calculating Camera Response Function (CRF)...")
     calibrateDebevec = cv2.createCalibrateDebevec()
     responseDebevec = calibrateDebevec.process(images, exposure_times)
     
-    # Merge images into an HDR linear image
+
     print("Merging images into one HDR image...")
     mergeDebevec = cv2.createMergeDebevec()
     hdrDebevec = mergeDebevec.process(images, exposure_times, responseDebevec)
     
+
     hdr_path = os.path.join(output_dir, f"{output_prefix}.hdr")
     cv2.imwrite(hdr_path, hdrDebevec)
     print(f"Saved HDR image: {hdr_path}")
     
+    print("Saving 16-bit linear TIFF...")
+    
+
+    max_luminance = np.max(hdrDebevec)
+    print(f"Maximum HDR luminance value: {max_luminance}")
+    
+    if max_luminance > 0:
+        # Use 80% of the available range to avoid clipping
+        scale_factor = (0.8 * 65535) / max_luminance
+    else:
+        scale_factor = 1.0
+    
+    print(f"Using scale factor: {scale_factor}")
+    tiff_16bit = np.clip(hdrDebevec * scale_factor, 0, 65535).astype(np.uint16)
+    tiff_path = os.path.join(output_dir, f"{output_prefix}_16bit_linear.tiff")
+    cv2.imwrite(tiff_path, tiff_16bit)
+    print(f"Saved 16-bit linear TIFF: {tiff_path}")
+    
     # Apply tone mapping if requested
+    tone_mapped_paths = {}
     if tone_mapping:
         # Drago tone mapping
         print("Tone mapping using Drago's method...")
@@ -72,6 +82,7 @@ def merge_hdr_opencv(image_paths, exposure_times=None, output_dir="hdr_outputsop
         drago_path = os.path.join(output_dir, f"{output_prefix}_Drago.jpg")
         cv2.imwrite(drago_path, ldrDrago * 255)
         print(f"Saved Drago tone-mapped image: {drago_path}")
+        tone_mapped_paths['drago'] = drago_path
         
         # Reinhard tone mapping
         print("Tone mapping using Reinhard's method...")
@@ -80,6 +91,7 @@ def merge_hdr_opencv(image_paths, exposure_times=None, output_dir="hdr_outputsop
         reinhard_path = os.path.join(output_dir, f"{output_prefix}_Reinhard.jpg")
         cv2.imwrite(reinhard_path, ldrReinhard * 255)
         print(f"Saved Reinhard tone-mapped image: {reinhard_path}")
+        tone_mapped_paths['reinhard'] = reinhard_path
         
         # Mantiuk tone mapping
         print("Tone mapping using Mantiuk's method...")
@@ -89,21 +101,91 @@ def merge_hdr_opencv(image_paths, exposure_times=None, output_dir="hdr_outputsop
         mantiuk_path = os.path.join(output_dir, f"{output_prefix}_Mantiuk.jpg")
         cv2.imwrite(mantiuk_path, ldrMantiuk * 255)
         print(f"Saved Mantiuk tone-mapped image: {mantiuk_path}")
+        tone_mapped_paths['mantiuk'] = mantiuk_path
     
-    return hdr_path
+    # Return paths to saved files
+    return {
+        'hdr': hdr_path,
+        'tiff_16bit': tiff_path,
+        'tone_mapped': {
+            'drago': tone_mapped_paths.get('drago'),
+            'reinhard': tone_mapped_paths.get('reinhard'),
+            'mantiuk': tone_mapped_paths.get('mantiuk')
+        }
+    }
+
+def extract_exposure_time_from_raw(cr2_file):
+    """
+    Extract exposure time from RAW file metadata.
+    
+    Parameters:
+    cr2_file (str): Path to CR2 file
+    
+    Returns:
+    float: Exposure time in seconds
+    """
+    try:
+        import rawpy
+        raw = rawpy.imread(cr2_file)
+        
+        # rawpy
+        try:
+            exposure_time = raw.raw_metadata.exposure_time
+            print(f"Found exposure time via rawpy: {exposure_time}")
+            return exposure_time
+        except:
+            pass
+        
+        # exifread
+        try:
+            import exifread
+            with open(cr2_file, 'rb') as f:
+                tags = exifread.process_file(f)
+                
+                if 'EXIF ExposureTime' in tags:
+                    exposure_str = str(tags['EXIF ExposureTime'])
+                    
+                    if '/' in exposure_str:
+                        num, denom = exposure_str.split('/')
+                        exposure_time = float(num) / float(denom)
+                    else:
+                        exposure_time = float(exposure_str)
+                    
+                    print(f"Extracted exposure time via exifread: {exposure_time}")
+                    return exposure_time
+        except ImportError:
+            print("exifread not installed, trying alternative methods")
+        except Exception as e:
+            print(f"Error with exifread: {e}")
+        
+        # Pillow
+        try:
+            from PIL import Image
+            from PIL.ExifTags import TAGS
+            
+            with Image.open(cr2_file) as img:
+                exif_data = img._getexif()
+                if exif_data:
+                    for tag_id, value in exif_data.items():
+                        tag = TAGS.get(tag_id, tag_id)
+                        if tag == 'ExposureTime':
+                            print(f"Extracted exposure time via Pillow: {value}")
+                            return float(value)
+        except ImportError:
+            print("Pillow not installed, trying alternative methods")
+        except Exception as e:
+            print(f"Error with Pillow: {e}")
+            
+    except Exception as e:
+        print(f"Error extracting metadata: {e}")
+    
+    # Failed
+    print(f"Could not extract exposure time from {os.path.basename(cr2_file)}")
+    return None
 
 def process_cr2_files(dataset_path, scene_id, output_dir="hdr_outputsopencv"):
     """
-    Process CR2 files for a specific scene and create HDR image.
-    This function handles RAW files using OpenCV's HDR merging.
-    
-    Parameters:
-    dataset_path (str): Path to the dataset directory
-    scene_id (str): ID of the scene to process
-    output_dir (str): Directory to save output files
-    
-    Returns:
-    str: Path to the saved HDR image
+    Process CR2 photos in a scene folder to create an HDR image.
     """
     scene_path = os.path.join(dataset_path, scene_id)
     
@@ -115,26 +197,30 @@ def process_cr2_files(dataset_path, scene_id, output_dir="hdr_outputsopencv"):
     image_files = sorted([os.path.join(scene_path, f) for f in os.listdir(scene_path) if f.endswith('.CR2')])
     
     if not image_files:
-        print(f"Error: No RAW (.CR2) images found in {scene_path}.")
+        print(f"Error: No RAW (.CR2) found in {scene_path}.")
         return None
     
     file_names = [f"'{os.path.basename(f)}'" for f in image_files]
     print(f"Processing files: [{', '.join(file_names)}]")
     
-
-    # Using exposure times
-    exposure_times = np.array([1/8000.0, 1/1000.0, 1/125.0, 1/15.0, 1/2.0], dtype=np.float32)
-    
-    # Ensure we have the right number of exposure times for the images
-    if len(exposure_times) != len(image_files):
-        print(f"Warning: Number of exposure times ({len(exposure_times)}) doesn't match number of images ({len(image_files)}).")
+    # Real exp using metadata 
+    exposure_times = []
+    for cr2_file in image_files:
+        exposure_time = extract_exposure_time_from_raw(cr2_file)
         
-        if len(exposure_times) > len(image_files):
-            exposure_times = exposure_times[:len(image_files)]
+        if exposure_time is not None:
+            exposure_times.append(exposure_time)
         else:
-            last_exposure = exposure_times[-1]
-            exposure_times = np.append(exposure_times, 
-                                      [last_exposure] * (len(image_files) - len(exposure_times)))
+            # Relative exp
+            default_exposures = [1/8000.0, 1/1000.0, 1/125.0, 1/15.0, 1/2.0]
+            idx = len(exposure_times)
+            if idx < len(default_exposures):
+                fallback_exposure = default_exposures[idx]
+            else:
+                fallback_exposure = default_exposures[-1]
+            
+            print(f"Using relative exposure time for {os.path.basename(cr2_file)}: {fallback_exposure}")
+            exposure_times.append(fallback_exposure)
     
     # Convert CR2 to JPEG (OpenCV can't directly process CR2)
     jpeg_files = []
@@ -146,7 +232,6 @@ def process_cr2_files(dataset_path, scene_id, output_dir="hdr_outputsopencv"):
             import imageio
             
             with rawpy.imread(cr2_file) as raw:
-
                 rgb = raw.postprocess(
                     use_camera_wb=True,
                     half_size=False,
@@ -159,9 +244,19 @@ def process_cr2_files(dataset_path, scene_id, output_dir="hdr_outputsopencv"):
                 jpeg_files.append(jpeg_file)
                 print(f"Converted {os.path.basename(cr2_file)} to JPEG")
         except ImportError:
-            print("rawpy and/or imageio modules not found. Please install them for CR2 conversion.")
-            print("Try: pip install rawpy imageio")
+            print("rawpy and/or imageio modules not found")
             return None
+        except Exception as e:
+            print(f"Error processing {os.path.basename(cr2_file)}: {e}")
+    
+    if len(jpeg_files) < 2:
+        print("Not enough valid images(minimum 2)")
+        return None
+    
+    exposure_times = exposure_times[:len(jpeg_files)]
+    exposure_times = np.array(exposure_times, dtype=np.float32)
+    
+    print(f"Using extracted exposure times: {exposure_times}")
     
     hdr_path = merge_hdr_opencv(
         jpeg_files, 
@@ -173,26 +268,15 @@ def process_cr2_files(dataset_path, scene_id, output_dir="hdr_outputsopencv"):
     return hdr_path
 
 def main():
-    """
-    def test():
-        print("Using first approach with JPEG files...")
-        filenames = ["img_0.033.jpg", "img_0.25.jpg", "img_2.5.jpg", "img_15.jpg"]
-        
-        times = np.array([ 1/30.0, 0.25, 2.5, 15.0 ], dtype=np.float32)
-        times = times[:len(filenames)]
-        image_paths = [os.path.join(os.getcwd(), f) for f in filenames]
-        merge_hdr_opencv(image_paths, times)
-    """
     
     def use_cr2():
-        print("Using second approach CR2 files...")
+        print("Using second approach with CR2 files and metadata extraction...")
         dataset_path = "sihdr/raw"
-        scene_id = "191"
+        scene_id = "002"
         
         process_cr2_files(dataset_path, scene_id)
 
 
-    #test()
     use_cr2()
 
 if __name__ == "__main__":
